@@ -248,6 +248,35 @@ package i2c_bfm_pkg is
     );
 
   ------------------------------------------
+  -- i2c_slave_receive_single_byte
+  ------------------------------------------
+  -- This procedure receives a byte 'byte' from the bus.
+  procedure i2c_slave_receive_single_byte (
+    variable byte         : out   std_logic_vector(7 downto 0);
+    variable valid        : out   boolean;
+    constant msg          : in    string;
+    signal scl            : inout std_logic;
+    signal sda            : inout std_logic;
+    constant scope        : in    string           := C_SCOPE;
+    constant msg_id_panel : in    t_msg_id_panel   := shared_msg_id_panel;
+    constant config       : in    t_i2c_bfm_config := C_I2C_BFM_CONFIG_DEFAULT
+    );
+
+  ------------------------------------------
+  -- i2c_slave_set_ack
+  ------------------------------------------
+  -- This procedure sets the slave acknowledgment.
+  procedure i2c_slave_set_ack (
+    constant ack          : in    std_logic;
+    constant msg          : in    string;
+    signal scl            : inout std_logic;
+    signal sda            : inout std_logic;
+    constant scope        : in    string           := C_SCOPE;
+    constant msg_id_panel : in    t_msg_id_panel   := shared_msg_id_panel;
+    constant config       : in    t_i2c_bfm_config := C_I2C_BFM_CONFIG_DEFAULT
+    );
+
+  ------------------------------------------
   -- i2c_slave_receive
   ------------------------------------------
   -- This procedure receives data 'data' from an I2C master DUT.
