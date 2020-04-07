@@ -1058,13 +1058,13 @@ package body i2c_bfm_pkg is
           -- receive the address bits
           i2c_slave_receive_single_byte(v_bfm_rx_data);
           v_received_addr(6 downto 0) := unsigned(v_bfm_rx_data(7 downto 1));
-          -- Check R/W bit
-          check_value(v_bfm_rx_data(0), '1', config.slave_rw_bit_severity, msg, scope, ID_NEVER, msg_id_panel);
 
           -- Set ACK/NACK based on address
           -- The master shall drive scl during the acknowledge cycle
           -- A valid ack is detected when sda is '0'.
           if v_received_addr = config.slave_mode_address then
+            -- Check R/W bit
+            check_value(v_bfm_rx_data(0), '1', config.slave_rw_bit_severity, msg, scope, ID_NEVER, msg_id_panel);
             -- ACK
             i2c_slave_set_ack('0');
           else
@@ -1532,12 +1532,11 @@ package body i2c_bfm_pkg is
           -- receive the address bits
           i2c_slave_receive_single_byte(v_bfm_rx_data);
 
-          check_value(v_bfm_rx_data(0), exp_rw_bit, config.slave_rw_bit_severity, msg, scope, ID_NEVER, msg_id_panel);  -- R/W bit
-
           -- Set ACK/NACK based on address
           -- The master shall drive scl during the acknowledge cycle
           -- A valid ack is detected when sda is '0'.
           if unsigned(v_bfm_rx_data(7 downto 1)) = config.slave_mode_address(6 downto 0) then
+            check_value(v_bfm_rx_data(0), exp_rw_bit, config.slave_rw_bit_severity, msg, scope, ID_NEVER, msg_id_panel);  -- R/W bit
             -- ACK
             i2c_slave_set_ack('0');
           else
