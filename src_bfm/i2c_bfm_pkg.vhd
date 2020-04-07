@@ -56,6 +56,7 @@ package i2c_bfm_pkg is
     i2c_bit_time_severity           : t_alert_level;  -- A master method will report an alert with this severity if a slave performs clock stretching for longer than i2c_bit_time.
     acknowledge_severity            : t_alert_level;  -- Severity if message not acknowledged
     slave_mode_address              : unsigned(9 downto 0);  -- The slave methods expect to receive this address from the I2C master DUT.
+    slave_mode_address_alert        : boolean;  -- Option to disable the wrong address alert (allowing multiple devices on the bus)
     slave_mode_address_severity     : t_alert_level;  -- The methods will report an alert with this severity if the address format is wrong or the address is not as expected.
     slave_rw_bit_severity           : t_alert_level;  -- The methods will report an alert with this severity if the Read/Write bit is not as expected.
     reserved_address_severity       : t_alert_level;  -- The methods will trigger an alert with this severity if the slave address is equal to one of the reserved addresses from the NXP I2C Specification. For a list of reserved addresses, please see the document referred to in section 3.
@@ -77,6 +78,7 @@ package i2c_bfm_pkg is
     i2c_bit_time_severity           => failure,
     acknowledge_severity            => failure,
     slave_mode_address              => "0000000000",
+    slave_mode_address_alert        => true,
     slave_mode_address_severity     => failure,
     slave_rw_bit_severity           => failure,
     reserved_address_severity       => warning,
@@ -1067,9 +1069,11 @@ package body i2c_bfm_pkg is
             i2c_slave_set_ack('0');
           else
             -- NACK
-            alert(config.slave_mode_address_severity, proc_call & " wrong slave address!" &
-                  " Expected: " & to_string(config.slave_mode_address, BIN, KEEP_LEADING_0) &
-                  ", Got: " & to_string(v_received_addr, BIN, KEEP_LEADING_0) & add_msg_delimiter(msg), scope);
+            if config.slave_mode_address_alert then
+              alert(config.slave_mode_address_severity, proc_call & " wrong slave address!" &
+                    " Expected: " & to_string(config.slave_mode_address, BIN, KEEP_LEADING_0) &
+                    ", Got: " & to_string(v_received_addr, BIN, KEEP_LEADING_0) & add_msg_delimiter(msg), scope);
+            end if;
             return;
           end if;
         else                            -- 10 bit addressing
@@ -1087,7 +1091,9 @@ package body i2c_bfm_pkg is
             i2c_slave_set_ack('0');
           else
             -- NACK
-            alert(config.slave_mode_address_severity, proc_call & " first byte was other than expected! " & add_msg_delimiter(msg), scope);
+            if config.slave_mode_address_alert then
+              alert(config.slave_mode_address_severity, proc_call & " first byte was other than expected! " & add_msg_delimiter(msg), scope);
+            end if;
             return;
           end if;
 
@@ -1103,9 +1109,11 @@ package body i2c_bfm_pkg is
             i2c_slave_set_ack('0');
           else
             -- NACK
-            alert(config.slave_mode_address_severity, proc_call & " wrong slave address!" &
-                  " Expected: " & to_string(config.slave_mode_address, BIN, KEEP_LEADING_0) &
-                  ", Got: " & to_string(v_received_addr, BIN, KEEP_LEADING_0) & add_msg_delimiter(msg), scope);
+            if config.slave_mode_address_alert then
+              alert(config.slave_mode_address_severity, proc_call & " wrong slave address!" &
+                    " Expected: " & to_string(config.slave_mode_address, BIN, KEEP_LEADING_0) &
+                    ", Got: " & to_string(v_received_addr, BIN, KEEP_LEADING_0) & add_msg_delimiter(msg), scope);
+            end if;
             return;
           end if;
 
@@ -1134,7 +1142,9 @@ package body i2c_bfm_pkg is
                 i2c_slave_set_ack('0');
               else
                 -- NACK
-                alert(config.slave_mode_address_severity, proc_call & " first byte was other than expected! " & add_msg_delimiter(msg), scope);
+                if config.slave_mode_address_alert then
+                  alert(config.slave_mode_address_severity, proc_call & " first byte was other than expected! " & add_msg_delimiter(msg), scope);
+                end if;
                 return;
               end if;
             else
@@ -1532,9 +1542,11 @@ package body i2c_bfm_pkg is
             i2c_slave_set_ack('0');
           else
             -- NACK
-            alert(config.slave_mode_address_severity, v_proc_call.all & " wrong slave address!" &
-                  " Expected: " & to_string(config.slave_mode_address, BIN, KEEP_LEADING_0) &
-                  ", Got: " & to_string(unsigned(v_bfm_rx_data(7 downto 1)), BIN, KEEP_LEADING_0) & add_msg_delimiter(msg), scope);
+            if config.slave_mode_address_alert then
+              alert(config.slave_mode_address_severity, v_proc_call.all & " wrong slave address!" &
+                    " Expected: " & to_string(config.slave_mode_address, BIN, KEEP_LEADING_0) &
+                    ", Got: " & to_string(unsigned(v_bfm_rx_data(7 downto 1)), BIN, KEEP_LEADING_0) & add_msg_delimiter(msg), scope);
+            end if;
             valid := false;
             return;
           end if;
@@ -1553,7 +1565,9 @@ package body i2c_bfm_pkg is
             i2c_slave_set_ack('0');
           else
             -- NACK
-            alert(config.slave_mode_address_severity, v_proc_call.all & " first byte was other than expected! " & add_msg_delimiter(msg), scope);
+            if config.slave_mode_address_alert then
+              alert(config.slave_mode_address_severity, v_proc_call.all & " first byte was other than expected! " & add_msg_delimiter(msg), scope);
+            end if;
             valid := false;
             return;
           end if;
@@ -1569,9 +1583,11 @@ package body i2c_bfm_pkg is
             i2c_slave_set_ack('0');
           else
             -- NACK
-            alert(config.slave_mode_address_severity, v_proc_call.all & " wrong slave address!" &
-                  " Expected: " & to_string(config.slave_mode_address, BIN, KEEP_LEADING_0) &
-                  ", Got: " & to_string(v_received_addr, BIN, KEEP_LEADING_0) & add_msg_delimiter(msg), scope);
+            if config.slave_mode_address_alert then
+              alert(config.slave_mode_address_severity, v_proc_call.all & " wrong slave address!" &
+                    " Expected: " & to_string(config.slave_mode_address, BIN, KEEP_LEADING_0) &
+                    ", Got: " & to_string(v_received_addr, BIN, KEEP_LEADING_0) & add_msg_delimiter(msg), scope);
+            end if;
             valid := false;
             return;
           end if;
