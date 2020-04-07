@@ -752,6 +752,48 @@ package body i2c_bfm_pkg is
     end loop;
   end procedure;
 
+  procedure i2c_slave_detect_start_stop (
+    constant start : in boolean;
+    constant msg           : in    string;
+    signal scl             : inout std_logic;
+    signal sda             : inout std_logic;
+    constant scope         : in    string           := C_SCOPE;
+    constant msg_id_panel  : in    t_msg_id_panel   := shared_msg_id_panel;
+    constant config        : in    t_i2c_bfm_config := C_I2C_BFM_CONFIG_DEFAULT
+    ) is
+  begin
+    if start then
+      wait until to_X01(scl) = '1' and falling_edge(sda);
+    else
+      wait until to_X01(scl) = '1' and rising_edge(sda);
+    end if;
+  end procedure;
+
+  procedure i2c_slave_detect_stop_or_prestart (
+    constant msg           : in    string;
+    signal scl             : inout std_logic;
+    signal sda             : inout std_logic;
+    constant scope         : in    string           := C_SCOPE;
+    constant msg_id_panel  : in    t_msg_id_panel   := shared_msg_id_panel;
+    constant config        : in    t_i2c_bfm_config := C_I2C_BFM_CONFIG_DEFAULT
+    ) is
+    variable cond_found : boolean := false;
+  begin
+    cond_found := false;
+    while not cond_found loop
+      wait until to_X01(scl) = '1';
+      if to_X01(sda) = '1' then
+        cond_found := true;
+      else
+        wait until (to_X01(sda) = '1') or (to_X01(scl) = '0'); -- found STOP or
+                                                               -- clk dropped
+        if to_X01(scl) = '1' and to_X01(sda) = '1' then
+          cond_found := true;
+        end if;
+      end if;
+    end loop;
+  end procedure;
+
   procedure i2c_slave_receive_single_byte (
     variable byte         : out   std_logic_vector(7 downto 0);
     variable valid        : out   boolean;
@@ -1033,6 +1075,18 @@ package body i2c_bfm_pkg is
     constant C_10_BIT_ADDRESS_PATTERN    : std_logic_vector(4 downto 0) := "11110";
     constant C_FIRST_10_BIT_ADDRESS_BITS : std_logic_vector(6 downto 0) := C_10_BIT_ADDRESS_PATTERN & std_logic_vector(config.slave_mode_address(9 downto 8));
 
+    procedure i2c_slave_detect_start_stop (
+      constant start : in boolean
+      ) is
+    begin
+      i2c_slave_detect_start_stop(start, msg, scl, sda, scope, msg_id_panel, config);
+    end procedure;
+
+    procedure i2c_slave_detect_stop_or_prestart is
+    begin
+      i2c_slave_detect_stop_or_prestart(msg, scl, sda, scope, msg_id_panel, config);
+    end procedure;
+
     procedure i2c_slave_transmit_single_byte (
       constant byte : in std_logic_vector(7 downto 0)
       ) is
@@ -1074,43 +1128,85 @@ package body i2c_bfm_pkg is
 
     check_value(data'ascending, failure, "Verifying that data is of ascending type.", scope, ID_NEVER, msg_id_panel);
 
-    await_value(sda, '1', MATCH_STD, 0 ns, config.max_wait_sda_change, config.max_wait_sda_change_severity, msg, scope, ID_NEVER, msg_id_panel);
-    await_value(scl, '1', MATCH_STD, 0 ns, config.max_wait_scl_change, config.max_wait_scl_change_severity, msg, scope, ID_NEVER, msg_id_panel);
+    -- await the start condition
+    i2c_slave_detect_start_stop(start => true);
+    await_value(scl, '0', 0 ns, config.max_wait_scl_change + config.max_wait_scl_change/100, config.max_wait_scl_change_severity, msg, scope, ID_NEVER, msg_id_panel);
 
-    if to_X01(sda) = '1' and to_X01(scl) = '1' then
-      -- await the start condition
-      await_value(sda, '0', 0 ns, config.max_wait_sda_change + config.max_wait_sda_change/100, config.max_wait_sda_change_severity, msg, scope, ID_NEVER, msg_id_panel);
-      await_value(scl, '0', 0 ns, config.max_wait_scl_change + config.max_wait_scl_change/100, config.max_wait_scl_change_severity, msg, scope, ID_NEVER, msg_id_panel);
+    if sda = '0' then
+      if not config.enable_10_bits_addressing then
+        -- receive the address bits
+        i2c_slave_receive_single_byte(v_bfm_rx_data);
+        v_received_addr(6 downto 0) := unsigned(v_bfm_rx_data(7 downto 1));
 
-      if sda = '0' then
-        if not config.enable_10_bits_addressing then
-          -- receive the address bits
-          i2c_slave_receive_single_byte(v_bfm_rx_data);
-          v_received_addr(6 downto 0) := unsigned(v_bfm_rx_data(7 downto 1));
-
-          -- Set ACK/NACK based on address
-          -- The master shall drive scl during the acknowledge cycle
-          -- A valid ack is detected when sda is '0'.
-          if v_received_addr = config.slave_mode_address then
-            -- Check R/W bit
-            check_value(v_bfm_rx_data(0), '1', config.slave_rw_bit_severity, msg, scope, ID_NEVER, msg_id_panel);
-            -- ACK
-            i2c_slave_set_ack('0');
-          else
-            -- NACK
-            if config.slave_mode_address_alert then
-              alert(config.slave_mode_address_severity, proc_call & " wrong slave address!" &
-                    " Expected: " & to_string(config.slave_mode_address, BIN, KEEP_LEADING_0) &
-                    ", Got: " & to_string(v_received_addr, BIN, KEEP_LEADING_0) & add_msg_delimiter(msg), scope);
-            end if;
-            return;
-          end if;
-        else                            -- 10 bit addressing
-          -- receive the first byte, consisting of "11110<bit 9><bit 8><write>"
-          i2c_slave_receive_single_byte(v_bfm_rx_data);
-          v_received_addr(9 downto 8) := unsigned(v_bfm_rx_data(2 downto 1));
+        -- Set ACK/NACK based on address
+        -- The master shall drive scl during the acknowledge cycle
+        -- A valid ack is detected when sda is '0'.
+        if v_received_addr = config.slave_mode_address then
           -- Check R/W bit
-          check_value(v_bfm_rx_data(0), '0', config.slave_rw_bit_severity, msg & ": checking R/W bit after first address byte (10-bit addressing)", scope, ID_NEVER, msg_id_panel);
+          check_value(v_bfm_rx_data(0), '1', config.slave_rw_bit_severity, msg, scope, ID_NEVER, msg_id_panel);
+          -- ACK
+          i2c_slave_set_ack('0');
+        else
+          -- NACK
+          if config.slave_mode_address_alert then
+            alert(config.slave_mode_address_severity, proc_call & " wrong slave address!" &
+                  " Expected: " & to_string(config.slave_mode_address, BIN, KEEP_LEADING_0) &
+                  ", Got: " & to_string(v_received_addr, BIN, KEEP_LEADING_0) & add_msg_delimiter(msg), scope);
+          end if;
+          return;
+        end if;
+      else                            -- 10 bit addressing
+        -- receive the first byte, consisting of "11110<bit 9><bit 8><write>"
+        i2c_slave_receive_single_byte(v_bfm_rx_data);
+        v_received_addr(9 downto 8) := unsigned(v_bfm_rx_data(2 downto 1));
+        -- Check R/W bit
+        check_value(v_bfm_rx_data(0), '0', config.slave_rw_bit_severity, msg & ": checking R/W bit after first address byte (10-bit addressing)", scope, ID_NEVER, msg_id_panel);
+
+        -- Set ACK/NACK based on first received byte
+        -- The master shall drive scl during the acknowledge cycle
+        -- A valid ack is detected when sda is '0'.
+        if v_bfm_rx_data(7 downto 1) = C_FIRST_10_BIT_ADDRESS_BITS then
+          -- ACK
+          i2c_slave_set_ack('0');
+        else
+          -- NACK
+          if config.slave_mode_address_alert then
+            alert(config.slave_mode_address_severity, proc_call & " first byte was other than expected! " & add_msg_delimiter(msg), scope);
+          end if;
+          return;
+        end if;
+
+        -- Receive LSB of 10-bit address
+        i2c_slave_receive_single_byte(v_bfm_rx_data);
+        v_received_addr(7 downto 0) := unsigned(v_bfm_rx_data);
+
+        -- Set ACK/NACK based on address
+        -- The master shall drive scl during the acknowledge cycle
+        -- A valid ack is detected when sda is '0'.
+        if v_received_addr = config.slave_mode_address then
+          -- ACK
+          i2c_slave_set_ack('0');
+        else
+          -- NACK
+          if config.slave_mode_address_alert then
+            alert(config.slave_mode_address_severity, proc_call & " wrong slave address!" &
+                  " Expected: " & to_string(config.slave_mode_address, BIN, KEEP_LEADING_0) &
+                  ", Got: " & to_string(v_received_addr, BIN, KEEP_LEADING_0) & add_msg_delimiter(msg), scope);
+          end if;
+          return;
+        end if;
+
+        -- Expect repeated start condition
+        sda <= 'Z';                   -- other side should drive now
+
+        i2c_slave_detect_start_stop(start => true);
+        await_value(scl, '0', 0 ns, config.max_wait_scl_change + config.max_wait_scl_change/100, config.max_wait_scl_change_severity, msg, scope, ID_NEVER, msg_id_panel);
+
+        if sda = '0' then
+          -- receive the first 2 address bits again+ read bit, consisting of "11110<bit 9><bit 8><read>"
+          i2c_slave_receive_single_byte(v_bfm_rx_data);
+          -- Check R/W bit
+          check_value(v_bfm_rx_data(0), '1', config.slave_rw_bit_severity, add_msg_delimiter(msg) & ": checking R/W bit after first address byte (10-bit addressing)", scope, ID_NEVER, msg_id_panel);
 
           -- Set ACK/NACK based on first received byte
           -- The master shall drive scl during the acknowledge cycle
@@ -1125,88 +1221,30 @@ package body i2c_bfm_pkg is
             end if;
             return;
           end if;
+        end if;
+      end if;
 
-          -- Receive LSB of 10-bit address
-          i2c_slave_receive_single_byte(v_bfm_rx_data);
-          v_received_addr(7 downto 0) := unsigned(v_bfm_rx_data);
+      for i in 0 to data'length - 1 loop
+        i2c_slave_transmit_single_byte(data(i));
 
-          -- Set ACK/NACK based on address
-          -- The master shall drive scl during the acknowledge cycle
-          -- A valid ack is detected when sda is '0'.
-          if v_received_addr = config.slave_mode_address then
-            -- ACK
-            i2c_slave_set_ack('0');
-          else
-            -- NACK
-            if config.slave_mode_address_alert then
-              alert(config.slave_mode_address_severity, proc_call & " wrong slave address!" &
-                    " Expected: " & to_string(config.slave_mode_address, BIN, KEEP_LEADING_0) &
-                    ", Got: " & to_string(v_received_addr, BIN, KEEP_LEADING_0) & add_msg_delimiter(msg), scope);
-            end if;
-            return;
-          end if;
-
-          -- Expect repeated start condition
-          sda <= 'Z';                   -- other side should drive now
-
-          await_value(scl, '1', MATCH_STD, 0 ns, config.max_wait_scl_change + config.max_wait_scl_change/100, config.max_wait_scl_change_severity, msg, scope, ID_NEVER, msg_id_panel);
-          await_value(sda, '1', MATCH_STD, 0 ns, config.master_scl_to_sda + config.master_scl_to_sda/100, config.max_wait_sda_change_severity, msg, scope, ID_NEVER, msg_id_panel);
-
-          if to_X01(sda) = '1' and to_X01(scl) = '1' then
-            -- await the start condition
-            await_value(sda, '0', 0 ns, config.max_wait_sda_change + config.max_wait_sda_change/100, config.max_wait_sda_change_severity, msg, scope, ID_NEVER, msg_id_panel);
-            await_value(scl, '0', 0 ns, config.max_wait_scl_change + config.max_wait_scl_change/100, config.max_wait_scl_change_severity, msg, scope, ID_NEVER, msg_id_panel);
-
-            if sda = '0' then
-              -- receive the first 2 address bits again+ read bit, consisting of "11110<bit 9><bit 8><read>"
-              i2c_slave_receive_single_byte(v_bfm_rx_data);
-              -- Check R/W bit
-              check_value(v_bfm_rx_data(0), '1', config.slave_rw_bit_severity, add_msg_delimiter(msg) & ": checking R/W bit after first address byte (10-bit addressing)", scope, ID_NEVER, msg_id_panel);
-
-              -- Set ACK/NACK based on first received byte
-              -- The master shall drive scl during the acknowledge cycle
-              -- A valid ack is detected when sda is '0'.
-              if v_bfm_rx_data(7 downto 1) = C_FIRST_10_BIT_ADDRESS_BITS then
-                -- ACK
-                i2c_slave_set_ack('0');
-              else
-                -- NACK
-                if config.slave_mode_address_alert then
-                  alert(config.slave_mode_address_severity, proc_call & " first byte was other than expected! " & add_msg_delimiter(msg), scope);
-                end if;
-                return;
-              end if;
-            else
-              alert(error, proc_call & " sda and scl not inactive (high) when wishing to start after repeated start condition for 10 bit address " & add_msg_delimiter(msg), scope);
-            end if;
-          end if;
+        -- Check ACK
+        -- The master shall drive scl during the acknowledge cycle
+        -- A valid ack is detected when sda is '0'.
+        -- A NACK ('1'/'H') means that the transaction is over.
+        if i < data'length - 1 then
+          i2c_slave_check_ack('0');
+        else                          -- final data byte expected
+          i2c_slave_check_ack('1');
         end if;
 
-        for i in 0 to data'length - 1 loop
-          i2c_slave_transmit_single_byte(data(i));
+        await_value(scl, '0', 0 ns, config.max_wait_scl_change + config.max_wait_scl_change/100, config.max_wait_scl_change_severity, msg, scope, ID_NEVER, msg_id_panel);
+      end loop;
 
-          -- Check ACK
-          -- The master shall drive scl during the acknowledge cycle
-          -- A valid ack is detected when sda is '0'.
-          -- A NACK ('1'/'H') means that the transaction is over.
-          if i < data'length - 1 then
-            i2c_slave_check_ack('0');
-          else                          -- final data byte expected
-            i2c_slave_check_ack('1');
-          end if;
+      -- Wait for either the stop condition or preparation for
+      -- repeated start condition.
+      sda <= 'Z';                     -- other side should drive now
+      i2c_slave_detect_stop_or_prestart;
 
-          await_value(scl, '0', 0 ns, config.max_wait_scl_change + config.max_wait_scl_change/100, config.max_wait_scl_change_severity, msg, scope, ID_NEVER, msg_id_panel);
-        end loop;
-
-        -- Wait for either the stop condition or preparation for
-        -- repeated start condition.
-        sda <= 'Z';                     -- other side should drive now
-        await_value(scl, '1', MATCH_STD, 0 ns, config.max_wait_scl_change + config.max_wait_scl_change/100, config.max_wait_scl_change_severity, msg, scope, ID_NEVER, msg_id_panel);
-        await_value(sda, '1', MATCH_STD, 0 ns, config.master_scl_to_sda + config.master_scl_to_sda/100, config.max_wait_sda_change_severity, msg, scope, ID_NEVER, msg_id_panel);
-
-      end if;
-    else
-      alert(error, proc_call & " sda and scl not inactive (high) when wishing to start " & add_msg_delimiter(msg), scope);
     end if;
 
     log(config.id_for_bfm, proc_call & "=> " & to_string(data, HEX, SKIP_LEADING_0, INCL_RADIX) & ". " & add_msg_delimiter(msg), scope, msg_id_panel);
@@ -1505,6 +1543,18 @@ package body i2c_bfm_pkg is
     constant C_10_BIT_ADDRESS_PATTERN    : std_logic_vector(4 downto 0) := "11110";
     constant C_FIRST_10_BIT_ADDRESS_BITS : std_logic_vector(6 downto 0) := C_10_BIT_ADDRESS_PATTERN & std_logic_vector(config.slave_mode_address(9 downto 8));
 
+    procedure i2c_slave_detect_stop_or_prestart is
+    begin
+      i2c_slave_detect_stop_or_prestart(msg, scl, sda, scope, msg_id_panel, config);
+    end procedure;
+
+    procedure i2c_slave_detect_start_stop (
+      constant start : in boolean
+      ) is
+    begin
+      i2c_slave_detect_start_stop(start, msg, scl, sda, scope, msg_id_panel, config);
+    end procedure;
+
     procedure i2c_slave_receive_single_byte (
       variable byte : out std_logic_vector(7 downto 0)
       ) is
@@ -1519,6 +1569,7 @@ package body i2c_bfm_pkg is
     begin
       i2c_slave_set_ack(ack, msg, scl, sda, scope, msg_id_panel, config);
     end procedure;
+
   begin
     -- returned data is valid by default (invalid only on error conditions)
     valid := true;
@@ -1548,98 +1599,90 @@ package body i2c_bfm_pkg is
       check_value(data'length, 0, TB_ERROR, "Expected data range must be 0 when expected R/W# bit is Read. " & add_msg_delimiter(msg) & ".", scope, ID_NEVER, msg_id_panel);
     end if;
 
-    await_value(sda, '1', MATCH_STD, 0 ns, config.max_wait_sda_change, config.max_wait_sda_change_severity, msg, scope, ID_NEVER, msg_id_panel);
-    await_value(scl, '1', MATCH_STD, 0 ns, config.max_wait_scl_change, config.max_wait_scl_change_severity, msg, scope, ID_NEVER, msg_id_panel);
+    -- await the start condition
+    i2c_slave_detect_start_stop(start => true);
 
-    if to_X01(sda) = '1' and to_X01(scl) = '1' then
-      -- await the start condition
-      await_value(sda, '0', 0 ns, config.max_wait_sda_change + config.max_wait_sda_change/100, config.max_wait_sda_change_severity, msg, scope, ID_NEVER, msg_id_panel);
-      await_value(scl, '0', 0 ns, config.max_wait_scl_change + config.max_wait_scl_change/100, config.max_wait_scl_change_severity, msg, scope, ID_NEVER, msg_id_panel);
+    await_value(scl, '0', 0 ns, config.max_wait_scl_change + config.max_wait_scl_change/100, config.max_wait_scl_change_severity, msg, scope, ID_NEVER, msg_id_panel);
 
-      if sda = '0' then
-        if not config.enable_10_bits_addressing then
-          -- receive the address bits
-          i2c_slave_receive_single_byte(v_bfm_rx_data);
+    if sda = '0' then
+      if not config.enable_10_bits_addressing then
+        -- receive the address bits
+        i2c_slave_receive_single_byte(v_bfm_rx_data);
 
-          -- Set ACK/NACK based on address
-          -- The master shall drive scl during the acknowledge cycle
-          -- A valid ack is detected when sda is '0'.
-          if unsigned(v_bfm_rx_data(7 downto 1)) = config.slave_mode_address(6 downto 0) then
-            check_value(v_bfm_rx_data(0), exp_rw_bit, config.slave_rw_bit_severity, msg, scope, ID_NEVER, msg_id_panel);  -- R/W bit
-            -- ACK
-            i2c_slave_set_ack('0');
-          else
-            -- NACK
-            if config.slave_mode_address_alert then
-              alert(config.slave_mode_address_severity, v_proc_call.all & " wrong slave address!" &
-                    " Expected: " & to_string(config.slave_mode_address, BIN, KEEP_LEADING_0) &
-                    ", Got: " & to_string(unsigned(v_bfm_rx_data(7 downto 1)), BIN, KEEP_LEADING_0) & add_msg_delimiter(msg), scope);
-            end if;
-            valid := false;
-            return;
-          end if;
+        -- Set ACK/NACK based on address
+        -- The master shall drive scl during the acknowledge cycle
+        -- A valid ack is detected when sda is '0'.
+        if unsigned(v_bfm_rx_data(7 downto 1)) = config.slave_mode_address(6 downto 0) then
+          check_value(v_bfm_rx_data(0), exp_rw_bit, config.slave_rw_bit_severity, msg, scope, ID_NEVER, msg_id_panel);  -- R/W bit
+          -- ACK
+          i2c_slave_set_ack('0');
         else
-          -- receive the first byte, consisting of "11110<bit 9><bit 8><write>"
-          i2c_slave_receive_single_byte(v_bfm_rx_data);
-          v_received_addr(9 downto 8) := unsigned(v_bfm_rx_data(2 downto 1));
-          -- Check R/W bit
-          check_value(v_bfm_rx_data(0), exp_rw_bit, config.slave_rw_bit_severity, add_msg_delimiter(msg) & ": checking R/W bit after first address byte (10-bit addressing)", scope, ID_NEVER, msg_id_panel);
-
-          -- Set ACK/NACK based on first received byte
-          -- The master shall drive scl during the acknowledge cycle
-          -- A valid ack is detected when sda is '0'.
-          if v_bfm_rx_data(7 downto 1) = C_FIRST_10_BIT_ADDRESS_BITS then
-            -- ACK
-            i2c_slave_set_ack('0');
-          else
-            -- NACK
-            if config.slave_mode_address_alert then
-              alert(config.slave_mode_address_severity, v_proc_call.all & " first byte was other than expected! " & add_msg_delimiter(msg), scope);
-            end if;
-            valid := false;
-            return;
+          -- NACK
+          if config.slave_mode_address_alert then
+            alert(config.slave_mode_address_severity, v_proc_call.all & " wrong slave address!" &
+                  " Expected: " & to_string(config.slave_mode_address, BIN, KEEP_LEADING_0) &
+                  ", Got: " & to_string(unsigned(v_bfm_rx_data(7 downto 1)), BIN, KEEP_LEADING_0) & add_msg_delimiter(msg), scope);
           end if;
+          valid := false;
+          return;
+        end if;
+      else
+        -- receive the first byte, consisting of "11110<bit 9><bit 8><write>"
+        i2c_slave_receive_single_byte(v_bfm_rx_data);
+        v_received_addr(9 downto 8) := unsigned(v_bfm_rx_data(2 downto 1));
+        -- Check R/W bit
+        check_value(v_bfm_rx_data(0), exp_rw_bit, config.slave_rw_bit_severity, add_msg_delimiter(msg) & ": checking R/W bit after first address byte (10-bit addressing)", scope, ID_NEVER, msg_id_panel);
 
-          i2c_slave_receive_single_byte(v_bfm_rx_data);
-          v_received_addr(7 downto 0) := unsigned(v_bfm_rx_data);
-
-          -- Set ACK/NACK based on address
-          -- The master shall drive scl during the acknowledge cycle
-          -- A valid ack is detected when sda is '0'.
-          if v_received_addr = config.slave_mode_address then
-            -- ACK
-            i2c_slave_set_ack('0');
-          else
-            -- NACK
-            if config.slave_mode_address_alert then
-              alert(config.slave_mode_address_severity, v_proc_call.all & " wrong slave address!" &
-                    " Expected: " & to_string(config.slave_mode_address, BIN, KEEP_LEADING_0) &
-                    ", Got: " & to_string(v_received_addr, BIN, KEEP_LEADING_0) & add_msg_delimiter(msg), scope);
-            end if;
-            valid := false;
-            return;
+        -- Set ACK/NACK based on first received byte
+        -- The master shall drive scl during the acknowledge cycle
+        -- A valid ack is detected when sda is '0'.
+        if v_bfm_rx_data(7 downto 1) = C_FIRST_10_BIT_ADDRESS_BITS then
+          -- ACK
+          i2c_slave_set_ack('0');
+        else
+          -- NACK
+          if config.slave_mode_address_alert then
+            alert(config.slave_mode_address_severity, v_proc_call.all & " first byte was other than expected! " & add_msg_delimiter(msg), scope);
           end if;
-
+          valid := false;
+          return;
         end if;
 
-        -- receive the data bytes
-        for i in 0 to data'length-1 loop
-          i2c_slave_receive_single_byte(data(i));
+        i2c_slave_receive_single_byte(v_bfm_rx_data);
+        v_received_addr(7 downto 0) := unsigned(v_bfm_rx_data);
 
-          -- Set ACK
-          -- The master shall drive scl during the acknowledge cycle
-          -- A valid ack is detected when sda is '0'.
+        -- Set ACK/NACK based on address
+        -- The master shall drive scl during the acknowledge cycle
+        -- A valid ack is detected when sda is '0'.
+        if v_received_addr = config.slave_mode_address then
+          -- ACK
           i2c_slave_set_ack('0');
-        end loop;
-
-        -- Wait for either the stop condition or preparation for
-        -- repeated start condition.
-        await_value(scl, '1', MATCH_STD, 0 ns, config.max_wait_scl_change + config.max_wait_scl_change/100, config.max_wait_scl_change_severity, msg, scope, ID_NEVER, msg_id_panel);
-        await_value(sda, '1', MATCH_STD, 0 ns, config.master_scl_to_sda + config.master_scl_to_sda/100, config.max_wait_sda_change_severity, msg, scope, ID_NEVER, msg_id_panel);
+        else
+          -- NACK
+          if config.slave_mode_address_alert then
+            alert(config.slave_mode_address_severity, v_proc_call.all & " wrong slave address!" &
+                  " Expected: " & to_string(config.slave_mode_address, BIN, KEEP_LEADING_0) &
+                  ", Got: " & to_string(v_received_addr, BIN, KEEP_LEADING_0) & add_msg_delimiter(msg), scope);
+          end if;
+          valid := false;
+          return;
+        end if;
 
       end if;
-    else
-      alert(error, v_proc_call.all & " sda and scl not inactive (high) when wishing to start " & add_msg_delimiter(msg), scope);
+
+      -- receive the data bytes
+      for i in 0 to data'length-1 loop
+        i2c_slave_receive_single_byte(data(i));
+
+        -- Set ACK
+        -- The master shall drive scl during the acknowledge cycle
+        -- A valid ack is detected when sda is '0'.
+        i2c_slave_set_ack('0');
+      end loop;
+
+      -- Wait for either the stop condition or preparation for
+      -- repeated start condition.
+      -- i2c_slave_detect_stop_or_prestart;
     end if;
 
     if ext_proc_call = "" then          -- proc_name = "i2c_slave_receive"
