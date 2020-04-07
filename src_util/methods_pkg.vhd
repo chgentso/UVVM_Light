@@ -2780,7 +2780,11 @@ package body methods_pkg is
 
     -- 4. Add time unit for full time specification
     v_time_width := v_time_number_width + 3;
-    if C_LOG_TIME_BASE = ns then
+    if C_LOG_TIME_BASE = ms then
+      v_result(v_time_number_width + 1 to v_time_width) := " ms";
+    elsif C_LOG_TIME_BASE = us then
+      v_result(v_time_number_width + 1 to v_time_width) := " us";
+    elsif C_LOG_TIME_BASE = ns then
       v_result(v_time_number_width + 1 to v_time_width) := " ns";
     else
       v_result(v_time_number_width + 1 to v_time_width) := " ps";
